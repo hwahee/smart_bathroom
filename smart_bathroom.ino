@@ -8,11 +8,43 @@
 #include <SimpleDHT.h>
 #include <Wire.h>
 
+const int MAX_PIN = 10;
+const int MIN_TEMP = 1, MAX_TEMP = 70, TEMP_BIAS = 2;
 
 const int pinTemperature = A0;
 const int pinDHT11 = 11;
-const int btnIn[]={9,8};
-const int ledOut[]={3,4,5};
+const int pinFan = 13;
+int btnIn[] = {8};
+int ledOut[] = {7, 6, 3};
+
+inline int len(int *arr) { return sizeof(arr) / sizeof(arr[0]); }
+
+class BtnLed {
+   public:
+    int port_btn[MAX_PIN] = {0};
+    int port_led[MAX_PIN] = {0};
+
+   public:
+    BtnLed(int *btn_arr, int nBtn, int *led_arr, int nLed) {
+        for (int i = 0; i < nBtn; i++) {
+            port_btn[i] = btn_arr[i];
+        }
+        for (int i = 0; i < nLed; i++) {
+            port_led[i] = led_arr[i];
+        }
+    }
+    int get(int n) { return digitalRead(port_btn[n]); }
+    void lit(int n) {
+        digitalWrite(ledOut[n], HIGH);
+    }  //임시로 전역변수 사용함 - 멤버 속성으로 바꿔야 함
+    void extinguish(int n) { digitalWrite(ledOut[n], LOW); }
+    void extinguishAll() {
+        for (int i = 0; i < len(this->port_led); i++) {
+            this->extinguish(i);
+        }
+    }
+};
+BtnLed btnled(btnIn, len(btnIn), ledOut, len(ledOut));
 
 class Humid {
    public:
@@ -31,7 +63,7 @@ class Humid {
             Serial.print(",");
             Serial.println(SimpleDHTErrDuration(err));
             delay(10);
-            return;
+            return -1;
         }
         Serial.println(humidity);
         return humidity;
@@ -42,11 +74,23 @@ Humid humid(pinDHT11);
 class Temperature {
    public:
     int port;
+    int temp_now;
+    int temp_mem;
 
    public:
-    Temperature(int port) { this->port = port; }
+    Temperature(int port) {
+        this->port = port;
+        temp_now = -1;
+        temp_mem = -1;
+    }
     int get() {
-        return map(analogRead(this->port),20,358, -40, 125);  //온드 가공 필요
+        this->temp_now = map(analogRead(this->port), 20, 358, -40, 125);
+        return this->temp_now;
+    }
+    int getMem() { return this->temp_mem; }
+    int setTempMem() { temp_mem = this->get(); }
+    bool isInRange(int temp, int min, int max) {
+        return (min <= temp && temp < max);
     }
 };
 Temperature temperature(pinTemperature);
@@ -68,7 +112,7 @@ class Fan {
     void setActive() {
         this->on = true;
         this->time_left = 100;
-        digitalWrite(pinFan,HIGH);
+        digitalWrite(pinFan, HIGH);
     }
     void setInactive() {
         this->on = false;
@@ -85,42 +129,82 @@ class Fan {
 };
 Fan fan(pinFan);
 
-// 0x3F I2C 주소를 가지고 있는 16x2 LCD객체를 생성합니다.(I2C 주소는 LCD에 맞게
-// 수정해야 합니다.)
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 void setup() {
+    Serial.begin(9600);
+
     pinMode(pinFan, OUTPUT);
-    
-    for(int i:btnIn){
+
+    for (int i : btnIn) {
         pinMode(i, INPUT);
     }
-    for(int i:ledOut){
+    for (int i : ledOut) {
         pinMode(i, OUTPUT);
     }
 
-    // I2C LCD를 초기화 합니다..
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < len(ledOut); j++) {
+            btnled.lit(j);
+        }
+        delay(100);
+        btnled.extinguish(0);
+        btnled.extinguish(1);
+        btnled.extinguish(2);
+        delay(100);
+    }
+
     lcd.init();
-    // I2C LCD의 백라이트를 켜줍니다.
     lcd.backlight();
 }
 
 void loop() {
-
     int vTemp = temperature.get(), vHumid = humid.get();
 
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("T: ");    lcd.print(vTemp);
-    lcd.setCursor(0, 1);
-    lcd.print("H: ");    lcd.print(vHumid);    lcd.print("  fan: ");    lcd.print(fan.on);
+    static int count = 0;
+    if (count++ % 2 == 0) {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("T: ");
+        lcd.print(vTemp);
+        lcd.print(" MEM:");
+        lcd.print(temperature.getMem());
 
-    if(50 < vHumid){
+        lcd.setCursor(0, 1);
+        lcd.print("H: ");
+        lcd.print(vHumid);
+        lcd.print(" fan: ");
+        lcd.print(fan.on);
+    }
+
+    if (btnled.get(0) == HIGH &&
+        temperature.isInRange(temperature.get(), MIN_TEMP, MAX_TEMP)) {
+        temperature.setTempMem();
+    }
+
+    if (temperature.isInRange(temperature.get(), MIN_TEMP, MAX_TEMP)) {
+        if (temperature.get() < temperature.getMem() - TEMP_BIAS) {
+            btnled.lit(0);
+            btnled.extinguish(1);
+            btnled.extinguish(2);
+        } else if (temperature.getMem() + TEMP_BIAS < temperature.get()) {
+            btnled.extinguish(0);
+            btnled.extinguish(1);
+            btnled.lit(2);
+        } else {
+            btnled.extinguish(0);
+            btnled.lit(1);
+            btnled.extinguish(2);
+        }
+    } else {
+        btnled.extinguishAll();
+    }
+
+    if (50 < vHumid) {
         fan.setActive();
     }
 
     fan.act();
 
     delay(100);
-    
 }
